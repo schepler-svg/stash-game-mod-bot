@@ -96,6 +96,44 @@ class GameModBot(commands.Bot):
         async def health(request):
             return web.json_response({"status": "ok"})
 
+        async def demo(request):
+            response = web.Response(text="""<!doctype html>
+<html lang="en"><head><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Game link test</title>
+<style>body{font:18px system-ui;background:#161b22;color:#eee;max-width:36rem;margin:3rem auto;padding:1rem}
+button{font:inherit;padding:.7rem 1rem;border:0;border-radius:.5rem;background:#5865f2;color:white}
+#code{font-size:2.5rem;letter-spacing:.2em;font-weight:bold}</style></head>
+<body><h1>Discord link test</h1><p>This tests the one-time code. No game credentials are requested.</p>
+<button id="begin">Generate code</button><p id="code"></p><p id="status"></p>
+<script>
+const begin=document.getElementById("begin"), code=document.getElementById("code"),
+ status=document.getElementById("status");
+begin.onclick=async()=>{
+ begin.disabled=true; status.textContent="Starting…";
+ try{
+  const r=await fetch("/api/link/start",{method:"POST"});
+  if(!r.ok)throw Error("Could not generate code ("+r.status+")");
+  const data=await r.json();
+  code.textContent=data.code;
+  status.textContent="In your Discord server, type /link and enter this code. It expires in 10 minutes.";
+  const deadline=Date.now()+data.expires_in*1000;
+  while(Date.now()<deadline){
+   await new Promise(resolve=>setTimeout(resolve,2000));
+   const result=await fetch("/api/link/status",{method:"POST",
+    headers:{"Content-Type":"application/json"},body:JSON.stringify({ticket:data.ticket})});
+   if(!result.ok)throw Error("Status check failed ("+result.status+")");
+   const state=await result.json();
+   if(state.status==="linked"){status.textContent="Account linked.";code.textContent="";return}
+   if(state.status==="invalid")break;
+  }
+  status.textContent="Code expired. Generate a new one.";code.textContent="";
+ }catch(error){status.textContent=error.message}
+ finally{begin.disabled=false}
+};
+</script></body></html>""", content_type="text/html")
+            response.headers["Cache-Control"] = "no-store"
+            return response
+
         async def start(request):
             ip = request.remote or "unknown"
             now = asyncio.get_running_loop().time()
@@ -147,6 +185,7 @@ class GameModBot(commands.Bot):
             return response
 
         app.router.add_get("/health", health)
+        app.router.add_get("/link/demo", demo)
         app.router.add_post("/api/link/start", start)
         app.router.add_get("/link/code/{code}", code_page)
         app.router.add_post("/api/link/status", status)
