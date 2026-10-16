@@ -5,13 +5,17 @@ import logging
 import os
 import re
 import sqlite3
+import time
 import urllib.error
 import urllib.request
+from collections import defaultdict, deque
 from pathlib import Path
 
 import discord
+from aiohttp import web
 from discord import app_commands
 from discord.ext import commands, tasks
+from pairing import Pairing, TTL
 
 ROOT = Path(__file__).parent
 LOG = logging.getLogger("game_mod_bot")
@@ -82,8 +86,78 @@ class GameModBot(commands.Bot):
         self.db = sqlite3.connect(ROOT / "bot.db")
         self.db.execute("CREATE TABLE IF NOT EXISTS releases (repo TEXT PRIMARY KEY, release_id TEXT NOT NULL)")
         self.db.commit()
+        self.pairing = Pairing(self.db)
+        self.web_runner = None
+        self.attempts = defaultdict(deque)
+
+    def web_app(self):
+        app = web.Application(client_max_size=1024)
+
+        async def health(request):
+            return web.json_response({"status": "ok"})
+
+        async def start(request):
+            ip = request.remote or "unknown"
+            now = asyncio.get_running_loop().time()
+            attempts = self.attempts[ip]
+            while attempts and now - attempts[0] > 60:
+                attempts.popleft()
+            if len(attempts) >= 30:
+                raise web.HTTPTooManyRequests(text="Try again in a minute")
+            attempts.append(now)
+            code, ticket = self.pairing.start()
+            base = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")
+            response = web.json_response({
+                "code": code, "ticket": ticket, "expires_in": TTL,
+                "browser_url": f"{base}/link/code/{code}" if base else f"/link/code/{code}",
+            })
+            response.headers["Cache-Control"] = "no-store"
+            return response
+
+        async def code_page(request):
+            code = request.match_info["code"]
+            if not re.fullmatch(r"[0-9]{8}", code):
+                raise web.HTTPNotFound()
+            row = self.db.execute(
+                "SELECT expires, discord_id FROM pairing WHERE code = ?", (code,)
+            ).fetchone()
+            if not row or row[0] <= time.time():
+                raise web.HTTPNotFound()
+            status = "Account linked. You can return to the game." if row[1] else (
+                f"Use /link code:{code} in your Discord server, then return to the game."
+            )
+            response = web.Response(
+                text=f"<!doctype html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'>"
+                     f"<title>Link game</title></head><body><h1>Link game</h1><p>{status}</p></body></html>",
+                content_type="text/html",
+            )
+            response.headers["Cache-Control"] = "no-store"
+            return response
+
+        async def status(request):
+            try:
+                body = await request.json()
+            except (ValueError, web.HTTPException):
+                raise web.HTTPBadRequest(text="Expected JSON") from None
+            ticket = body.get("ticket", "") if isinstance(body, dict) else ""
+            if not isinstance(ticket, str) or not ticket:
+                raise web.HTTPBadRequest(text="Missing ticket")
+            response = web.json_response(self.pairing.poll(ticket))
+            response.headers["Cache-Control"] = "no-store"
+            return response
+
+        app.router.add_get("/health", health)
+        app.router.add_post("/api/link/start", start)
+        app.router.add_get("/link/code/{code}", code_page)
+        app.router.add_post("/api/link/status", status)
+        return app
 
     async def setup_hook(self):
+        port = int(os.getenv("SERVER_PORT", "8080"))
+        self.web_runner = web.AppRunner(self.web_app())
+        await self.web_runner.setup()
+        site = web.TCPSite(self.web_runner, "0.0.0.0", port)
+        await site.start()
         if self.guild_id:
             guild = discord.Object(id=self.guild_id)
             self.tree.copy_global_to(guild=guild)
@@ -97,6 +171,8 @@ class GameModBot(commands.Bot):
         if self.watch_releases.is_running():
             self.watch_releases.cancel()
         await super().close()
+        if self.web_runner:
+            await self.web_runner.cleanup()
         self.db.close()
 
     @tasks.loop(minutes=15)
@@ -171,6 +247,14 @@ def main():
     async def mod_autocomplete(interaction: discord.Interaction, current: str):
         return [app_commands.Choice(name=x["name"], value=x["name"])
                 for x in bot.mods if current.casefold() in x["name"].casefold()][:10]
+
+    @bot.tree.command(name="link", description="Link your Discord account with the game code")
+    @app_commands.guild_only()
+    async def link(interaction: discord.Interaction, code: str):
+        if bot.pairing.link(code.strip(), interaction.user.id):
+            await interaction.response.send_message("Account linked. Return to the game.", ephemeral=True)
+        else:
+            await interaction.response.send_message("Invalid, expired, or already used code.", ephemeral=True)
 
     @bot.tree.error
     async def on_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
