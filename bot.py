@@ -184,11 +184,28 @@ begin.onclick=async()=>{
             response.headers["Cache-Control"] = "no-store"
             return response
 
+        async def device(request):
+            try:
+                body = await request.json()
+            except (ValueError, web.HTTPException):
+                raise web.HTTPBadRequest(text="Expected JSON") from None
+            token = body.get("device_token") if isinstance(body, dict) else None
+            result = (self.pairing.revoke(token) if request.path.endswith("/revoke")
+                      else self.pairing.verify(token))
+            response = web.json_response(
+                {"status": "revoked" if result else "invalid"}
+                if request.path.endswith("/revoke") else result
+            )
+            response.headers["Cache-Control"] = "no-store"
+            return response
+
         app.router.add_get("/health", health)
         app.router.add_get("/link/demo", demo)
         app.router.add_post("/api/link/start", start)
         app.router.add_get("/link/code/{code}", code_page)
         app.router.add_post("/api/link/status", status)
+        app.router.add_post("/api/link/verify", device)
+        app.router.add_post("/api/link/revoke", device)
         return app
 
     async def setup_hook(self):
