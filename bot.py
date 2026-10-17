@@ -312,6 +312,18 @@ def main():
         else:
             await interaction.response.send_message("Invalid, expired, or already used code.", ephemeral=True)
 
+    @bot.tree.command(name="unlink", description="Unlink your Discord account from the game")
+    @app_commands.guild_only()
+    async def unlink(interaction: discord.Interaction):
+        count = bot.pairing.unlink_discord(interaction.user.id)
+        if count:
+            message = (f"Unlinked {count} game device{'s' if count != 1 else ''}. "
+                       "Restart the game to get a new linking code.")
+        else:
+            message = ("No linked game devices were found for your Discord account. "
+                       "Any pending code was canceled.")
+        await interaction.response.send_message(message, ephemeral=True)
+
     @bot.tree.error
     async def on_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
         LOG.error("Command error: %s", error)

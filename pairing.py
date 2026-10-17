@@ -97,3 +97,13 @@ class Pairing:
                 "DELETE FROM game_devices WHERE secret_hash = ?", (self._hash(device_token),)
             )
         return cursor.rowcount == 1
+
+    def unlink_discord(self, discord_id: int) -> int:
+        """Revoke this Discord user's devices and cancel outstanding pairings."""
+        user_id = str(discord_id)
+        with self.db:
+            cursor = self.db.execute(
+                "DELETE FROM game_devices WHERE discord_id = ?", (user_id,)
+            )
+            self.db.execute("DELETE FROM pairing WHERE discord_id = ?", (user_id,))
+        return cursor.rowcount
