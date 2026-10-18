@@ -15,6 +15,7 @@ import discord
 from aiohttp import web
 from discord import app_commands
 from discord.ext import commands, tasks
+from auth_store import AuthStore
 from pairing import Pairing, TTL
 
 ROOT = Path(__file__).parent
@@ -87,6 +88,7 @@ class GameModBot(commands.Bot):
         self.db.execute("CREATE TABLE IF NOT EXISTS releases (repo TEXT PRIMARY KEY, release_id TEXT NOT NULL)")
         self.db.commit()
         self.pairing = Pairing(self.db)
+        self.auth = AuthStore(self.db)
         self.web_runner = None
         self.attempts = defaultdict(deque)
 
@@ -199,6 +201,19 @@ begin.onclick=async()=>{
             response.headers["Cache-Control"] = "no-store"
             return response
 
+        async def auth_selection(request):
+            try:
+                body = await request.json()
+            except (ValueError, web.HTTPException):
+                raise web.HTTPBadRequest(text="Expected JSON") from None
+            token = body.get("device_token") if isinstance(body, dict) else None
+            linked = self.pairing.verify(token)
+            if linked["status"] != "linked":
+                raise web.HTTPUnauthorized(text="Invalid device token")
+            response = web.json_response(self.auth.selection(linked["discord_id"]))
+            response.headers["Cache-Control"] = "no-store"
+            return response
+
         app.router.add_get("/health", health)
         app.router.add_get("/link/demo", demo)
         app.router.add_post("/api/link/start", start)
@@ -206,6 +221,7 @@ begin.onclick=async()=>{
         app.router.add_post("/api/link/status", status)
         app.router.add_post("/api/link/verify", device)
         app.router.add_post("/api/link/revoke", device)
+        app.router.add_post("/api/auth/selection", auth_selection)
         return app
 
     async def setup_hook(self):
@@ -269,6 +285,78 @@ def main():
         raise SystemExit("Set DISCORD_TOKEN in the host environment")
     bot = GameModBot(load_mods(ROOT / "mods.json"), env_id("GUILD_ID"), env_id("RELEASE_CHANNEL_ID"))
 
+    def linked(user_id: int) -> bool:
+        return bot.db.execute(
+            "SELECT 1 FROM game_devices WHERE discord_id = ? LIMIT 1", (str(user_id),)
+        ).fetchone() is not None
+
+    class TokenModal(discord.ui.Modal, title="Store Gorilla Tag session tokens"):
+        bearer = discord.ui.TextInput(label="Bearer", style=discord.TextStyle.paragraph,
+                                      min_length=16, max_length=4000)
+        refresh = discord.ui.TextInput(label="Refresh", style=discord.TextStyle.paragraph,
+                                       min_length=16, max_length=4000)
+
+        async def on_submit(self, interaction: discord.Interaction):
+            if not linked(interaction.user.id):
+                await interaction.response.send_message("Link a game device with /link first.", ephemeral=True)
+                return
+            try:
+                slot = bot.auth.add(interaction.user.id, str(self.bearer), str(self.refresh))
+            except (RuntimeError, ValueError) as error:
+                await interaction.response.send_message(str(error), ephemeral=True)
+                return
+            await interaction.response.send_message(
+                f"Stored as token #{slot}. Authentication and refresh are not verified yet.", ephemeral=True
+            )
+
+    auto = app_commands.Group(name="auto", description="Manage game-session token slots")
+    use = app_commands.Group(name="use", description="Select a game-session token slot")
+
+    @auto.command(name="refresh_token", description="Privately store bearer and refresh tokens")
+    @app_commands.guild_only()
+    async def refresh_token(interaction: discord.Interaction):
+        if not linked(interaction.user.id):
+            await interaction.response.send_message("Link a game device with /link first.", ephemeral=True)
+            return
+        try:
+            bot.auth.require_key()
+        except RuntimeError as error:
+            await interaction.response.send_message(str(error), ephemeral=True)
+            return
+        await interaction.response.send_modal(TokenModal())
+
+    @auto.command(name="tokens", description="List your stored token slots")
+    @app_commands.guild_only()
+    async def tokens(interaction: discord.Interaction):
+        slots, selected = bot.auth.list_slots(interaction.user.id)
+        message = ("Slots: " + ", ".join(f"#{n}{' (selected)' if n == selected else ''}" for n in slots)) if slots else "No token slots stored."
+        await interaction.response.send_message(message, ephemeral=True)
+
+    @auto.command(name="remove_token", description="Delete one stored token slot")
+    @app_commands.guild_only()
+    async def remove_token(interaction: discord.Interaction, slot: int):
+        removed = bot.auth.delete(interaction.user.id, slot)
+        await interaction.response.send_message("Token slot deleted." if removed else "No such token slot.", ephemeral=True)
+
+    @use.command(name="auto_refresh_token", description="Select a stored token for your linked game device")
+    @app_commands.guild_only()
+    async def use_token(interaction: discord.Interaction, slot: int):
+        if not linked(interaction.user.id):
+            await interaction.response.send_message("Link a game device with /link first.", ephemeral=True)
+            return
+        try:
+            bot.auth.select(interaction.user.id, slot)
+        except (RuntimeError, ValueError) as error:
+            await interaction.response.send_message(str(error), ephemeral=True)
+            return
+        await interaction.response.send_message(
+            f"Selected token #{slot} for linked devices. Game authentication is pending verification.",
+            ephemeral=True,
+        )
+
+    bot.tree.add_command(auto)
+    bot.tree.add_command(use)
+
     @bot.tree.command(name="mods", description="List available game mods")
     @app_commands.guild_only()
     async def mods(interaction: discord.Interaction, game: str | None = None):
@@ -316,6 +404,7 @@ def main():
     @app_commands.guild_only()
     async def unlink(interaction: discord.Interaction):
         count = bot.pairing.unlink_discord(interaction.user.id)
+        bot.auth.clear(interaction.user.id)
         if count:
             message = (f"Unlinked {count} game device{'s' if count != 1 else ''}. "
                        "Restart the game to get a new linking code.")
