@@ -252,16 +252,34 @@ begin.onclick=async()=>{
 
     @tasks.loop(minutes=5)
     async def check_jwt_expiration(self):
-        """Monitor JWT expiration; this does not refresh or authenticate tokens."""
-        rows = self.db.execute("SELECT discord_id, slot FROM auth_slots").fetchall()
-        for user_id, slot in rows:
-            try:
-                result = self.auth.jwt_status(int(user_id), slot)
-                if result["status"] != "not_expired_unverified" or result["seconds_remaining"] <= 600:
-                    LOG.info("JWT slot status: user=%s slot=%s state=%s remaining=%ss",
-                             user_id, slot, result["status"], result["seconds_remaining"])
-            except (ValueError, RuntimeError) as error:
-                LOG.warning("JWT status unavailable for user=%s slot=%s: %s", user_id, slot, error)
+        """Log every monitoring cycle; never refresh or authenticate a JWT."""
+        from datetime import datetime, timezone
+
+        checked_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        checked = 0
+        expired = 0
+        errors = 0
+        try:
+            rows = self.db.execute("SELECT discord_id, slot FROM auth_slots").fetchall()
+            for user_id, slot in rows:
+                try:
+                    result = self.auth.jwt_status(int(user_id), slot)
+                    checked += 1
+                    state = result["status"]
+                    if state == "expired":
+                        expired += 1
+                    if state != "not_expired_unverified" or result["seconds_remaining"] <= 600:
+                        LOG.info("JWT slot status: slot=%s state=%s remaining=%ss",
+                                 slot, state, result["seconds_remaining"])
+                except (ValueError, RuntimeError) as error:
+                    errors += 1
+                    LOG.warning("JWT status unavailable for slot=%s: %s", slot, error)
+        except Exception:
+            errors += 1
+            LOG.exception("JWT monitor cycle failed")
+        finally:
+            LOG.info("JWT monitor completed at %s: checked=%d expired=%d errors=%d; renewal=disabled",
+                     checked_at, checked, expired, errors)
 
     @check_jwt_expiration.before_loop
     async def before_check_jwt_expiration(self):
