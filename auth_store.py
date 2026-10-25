@@ -145,9 +145,17 @@ class AuthStore:
             state = "expired"
         else:
             state = "not_expired_unverified"
+        issuer = claims.get("iss")
+        if not isinstance(issuer, str) or len(issuer) > 200 or any(ord(c) < 32 for c in issuer):
+            issuer = None
+        algorithm = header.get("alg")
+        if not isinstance(algorithm, str) or len(algorithm) > 30 or not algorithm.isascii():
+            algorithm = None
         return {"status": state, "expires_at": exp,
                 "seconds_remaining": max(0, exp - now),
-                "signature_verified": False}
+                "issuer": issuer, "algorithm": algorithm,
+                "signature_verified": False,
+                "renewal_status": "not_configured"}
 
     def add_jwt(self, discord_id: int, jwt: str) -> int:
         """Store a JWT-only credential in an encrypted slot."""
