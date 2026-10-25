@@ -383,6 +383,28 @@ def main():
             "Signature not verified; no automatic renewal is configured.", ephemeral=True
         )
 
+    @auto.command(name="jwt_info", description="Show safe JWT metadata and renewal status")
+    @app_commands.guild_only()
+    async def jwt_info(interaction: discord.Interaction, slot: int):
+        try:
+            info = bot.auth.jwt_status(interaction.user.id, slot)
+        except (RuntimeError, ValueError) as error:
+            await interaction.response.send_message(str(error), ephemeral=True)
+            return
+        issuer = info.get("issuer") or "Not provided"
+        algorithm = info.get("algorithm") or "Not provided"
+        # Avoid exposing arbitrary claims or secrets in the Discord response.
+        await interaction.response.send_message(
+            f"JWT slot #{slot}\n"
+            f"Issuer (unverified): {discord.utils.escape_markdown(issuer)}\n"
+            f"Algorithm (unverified): {discord.utils.escape_markdown(algorithm)}\n"
+            f"Status: {info['status']}\n"
+            f"Expires: <t:{info['expires_at']}:F>\n"
+            "Signature verified: No\n"
+            "Automatic renewal: Not configured (requires an official provider flow).",
+            ephemeral=True,
+        )
+
     @auto.command(name="remove_token", description="Delete one stored token slot")
     @app_commands.guild_only()
     async def remove_token(interaction: discord.Interaction, slot: int):
