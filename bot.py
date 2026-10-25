@@ -238,14 +238,34 @@ begin.onclick=async()=>{
             await self.tree.sync()
         if self.mods and self.channel_id:
             self.watch_releases.start()
+        self.check_jwt_expiration.start()
 
     async def close(self):
         if self.watch_releases.is_running():
             self.watch_releases.cancel()
+        if self.check_jwt_expiration.is_running():
+            self.check_jwt_expiration.cancel()
         await super().close()
         if self.web_runner:
             await self.web_runner.cleanup()
         self.db.close()
+
+    @tasks.loop(minutes=5)
+    async def check_jwt_expiration(self):
+        """Monitor JWT expiration; this does not refresh or authenticate tokens."""
+        rows = self.db.execute("SELECT discord_id, slot FROM auth_slots").fetchall()
+        for user_id, slot in rows:
+            try:
+                result = self.auth.jwt_status(int(user_id), slot)
+                if result["status"] != "not_expired_unverified" or result["seconds_remaining"] <= 600:
+                    LOG.info("JWT slot status: user=%s slot=%s state=%s remaining=%ss",
+                             user_id, slot, result["status"], result["seconds_remaining"])
+            except (ValueError, RuntimeError) as error:
+                LOG.warning("JWT status unavailable for user=%s slot=%s: %s", user_id, slot, error)
+
+    @check_jwt_expiration.before_loop
+    async def before_check_jwt_expiration(self):
+        await self.wait_until_ready()
 
     @tasks.loop(minutes=15)
     async def watch_releases(self):
@@ -290,29 +310,29 @@ def main():
             "SELECT 1 FROM game_devices WHERE discord_id = ? LIMIT 1", (str(user_id),)
         ).fetchone() is not None
 
-    class TokenModal(discord.ui.Modal, title="Store Gorilla Tag session tokens"):
-        bearer = discord.ui.TextInput(label="Bearer", style=discord.TextStyle.paragraph,
-                                      min_length=16, max_length=4000)
-        refresh = discord.ui.TextInput(label="Refresh", style=discord.TextStyle.paragraph,
-                                       min_length=16, max_length=4000)
+    class TokenModal(discord.ui.Modal, title="Store JWT for expiration monitoring"):
+        jwt = discord.ui.TextInput(label="JWT", style=discord.TextStyle.paragraph,
+                                   min_length=16, max_length=4000)
 
         async def on_submit(self, interaction: discord.Interaction):
             if not linked(interaction.user.id):
                 await interaction.response.send_message("Link a game device with /link first.", ephemeral=True)
                 return
             try:
-                slot = bot.auth.add(interaction.user.id, str(self.bearer), str(self.refresh))
+                slot = bot.auth.add_jwt(interaction.user.id, str(self.jwt))
+                status = bot.auth.jwt_status(interaction.user.id, slot)
             except (RuntimeError, ValueError) as error:
                 await interaction.response.send_message(str(error), ephemeral=True)
                 return
             await interaction.response.send_message(
-                f"Stored as token #{slot}. Authentication and refresh are not verified yet.", ephemeral=True
+                f"JWT stored as slot #{slot}. Status: {status['status']}. "
+                "Signature and game authentication have not been verified.", ephemeral=True
             )
 
     auto = app_commands.Group(name="auto", description="Manage game-session token slots")
     use = app_commands.Group(name="use", description="Select a game-session token slot")
 
-    @auto.command(name="refresh_token", description="Privately store bearer and refresh tokens")
+    @auto.command(name="refresh_token", description="Privately store a JWT for expiration monitoring")
     @app_commands.guild_only()
     async def refresh_token(interaction: discord.Interaction):
         if not linked(interaction.user.id):
@@ -331,6 +351,19 @@ def main():
         slots, selected = bot.auth.list_slots(interaction.user.id)
         message = ("Slots: " + ", ".join(f"#{n}{' (selected)' if n == selected else ''}" for n in slots)) if slots else "No token slots stored."
         await interaction.response.send_message(message, ephemeral=True)
+
+    @auto.command(name="jwt_status", description="Check JWT expiry without exposing the token")
+    @app_commands.guild_only()
+    async def jwt_status(interaction: discord.Interaction, slot: int):
+        try:
+            result = bot.auth.jwt_status(interaction.user.id, slot)
+        except (RuntimeError, ValueError) as error:
+            await interaction.response.send_message(str(error), ephemeral=True)
+            return
+        await interaction.response.send_message(
+            f"Slot #{slot}: {result['status']}; expires <t:{result['expires_at']}:R>. "
+            "Signature not verified; no automatic renewal is configured.", ephemeral=True
+        )
 
     @auto.command(name="remove_token", description="Delete one stored token slot")
     @app_commands.guild_only()
