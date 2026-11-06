@@ -184,3 +184,8 @@ class AuthStore:
         if not isinstance(token, str):
             raise ValueError("Selected slot does not contain a JWT")
         return self.jwt_metadata(token)
+
+    def export_token(self, discord_id: str, slot: int, path: str):
+        creds = self.decrypt_for_future_adapter(int(discord_id), slot)
+        with open(path, "w") as f:
+            json.dump({"token": creds.get("bearer", "")}, f)
