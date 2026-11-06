@@ -210,7 +210,17 @@ begin.onclick=async()=>{
             linked = self.pairing.verify(token)
             if linked["status"] != "linked":
                 raise web.HTTPUnauthorized(text="Invalid device token")
-            response = web.json_response(self.auth.selection(linked["discord_id"]))
+            selection = self.auth.selection(linked["discord_id"])
+            if selection.get("status") == "pending_game_auth":
+                try:
+                    self.auth.export_token(
+                        linked["discord_id"],
+                        selection["slot"],
+                        str(ROOT / "token.json"),
+                    )
+                except Exception as error:
+                    LOG.warning("Token export failed: %s", error)
+            response = web.json_response(selection)
             response.headers["Cache-Control"] = "no-store"
             return response
 
