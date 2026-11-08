@@ -6,6 +6,7 @@ import os
 import re
 import sqlite3
 import time
+import traceback
 import urllib.error
 import urllib.request
 from collections import defaultdict, deque
@@ -525,7 +526,12 @@ def main():
         else:
             await interaction.response.send_message(message, ephemeral=True)
 
-    bot.run(token)
+    while True:
+        try:
+            bot.run(token)
+        except Exception:
+            LOG.error(traceback.format_exc())
+            time.sleep(5)
 
 
 if __name__ == "__main__":
