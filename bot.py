@@ -344,7 +344,10 @@ def main():
 
     @bot.event
     async def on_interaction(interaction: discord.Interaction):
-        if interaction.type == discord.InteractionType.application_command and not interaction.response.is_done():
+        if (interaction.type == discord.InteractionType.application_command
+                and not interaction.response.is_done()
+                and interaction.command
+                and interaction.command.qualified_name != "auto refresh_token"):
             try:
                 await interaction.response.defer(ephemeral=True)
             except Exception:
@@ -381,14 +384,13 @@ def main():
     @app_commands.guild_only()
     async def refresh_token(interaction: discord.Interaction):
         if not linked(interaction.user.id):
-            await interaction.followup.send("Link a game device with /link first.", ephemeral=True)
+            await interaction.response.send_message("Link a game device with /link first.", ephemeral=True)
             return
         try:
             bot.auth.require_key()
         except RuntimeError as error:
-            await interaction.followup.send(str(error), ephemeral=True)
+            await interaction.response.send_message(str(error), ephemeral=True)
             return
-        await interaction.followup.send("Use the modal that appears.", ephemeral=True)
         await interaction.response.send_modal(TokenModal())
 
     @auto.command(name="tokens", description="List your stored token slots")
