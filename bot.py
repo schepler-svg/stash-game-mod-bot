@@ -337,7 +337,12 @@ def main():
 
     @bot.event
     async def on_ready():
-        LOG.info("Bot ready as %s", bot.user)
+        LOG.info("READY %s", bot.user)
+        try:
+            synced = await bot.tree.sync()
+            LOG.info("SYNCED %d", len(synced))
+        except Exception as e:
+            LOG.error("SYNC FAIL %s", e)
 
     @bot.event
     async def on_message(message: discord.Message):
@@ -467,6 +472,11 @@ def main():
 
     bot.tree.add_command(auto)
     bot.tree.add_command(use)
+
+    @bot.tree.command(name="ping", description="Test if the bot answers")
+    async def ping(interaction: discord.Interaction):
+        LOG.info("PING RECEIVED")
+        await interaction.response.send_message("pong", ephemeral=True)
 
     @bot.tree.command(name="mods", description="List available game mods")
     @app_commands.guild_only()
