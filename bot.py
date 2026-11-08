@@ -82,7 +82,9 @@ def release_embed(mod, release):
 
 class GameModBot(commands.Bot):
     def __init__(self, mods, guild_id, channel_id):
-        super().__init__(command_prefix=commands.when_mentioned, intents=discord.Intents.default())
+        intents = discord.Intents.default()
+        intents.message_content = True
+        super().__init__(command_prefix=commands.when_mentioned, intents=intents)
         self.mods, self.guild_id, self.channel_id = mods, guild_id, channel_id
         self.db = sqlite3.connect(ROOT / "bot.db")
         self.db.execute("CREATE TABLE IF NOT EXISTS releases (repo TEXT PRIMARY KEY, release_id TEXT NOT NULL)")
@@ -333,6 +335,25 @@ def main():
         raise SystemExit("Set DISCORD_TOKEN in the host environment")
     bot = GameModBot(load_mods(ROOT / "mods.json"), env_id("GUILD_ID"), env_id("RELEASE_CHANNEL_ID"))
 
+    @bot.event
+    async def on_message(message: discord.Message):
+        if message.author.bot:
+            return
+        channel = message.channel
+        if not isinstance(channel, discord.TextChannel):
+            return
+        me = channel.guild.me
+        perms = channel.permissions_for(me)
+        if not (perms.send_messages and perms.manage_messages):
+            return
+        # wipe regular messages; slash commands are interactions and stay
+        if message.interaction is None and not message.content.startswith("/"):
+            try:
+                await message.delete()
+            except discord.HTTPException:
+                pass
+        await bot.process_commands(message)
+
     def linked(user_id: int) -> bool:
         return bot.db.execute(
             "SELECT 1 FROM game_devices WHERE discord_id = ? LIMIT 1", (str(user_id),)
@@ -403,7 +424,6 @@ def main():
             return
         issuer = info.get("issuer") or "Not provided"
         algorithm = info.get("algorithm") or "Not provided"
-        # Avoid exposing arbitrary claims or secrets in the Discord response.
         await interaction.response.send_message(
             f"JWT slot #{slot}\n"
             f"Issuer (unverified): {discord.utils.escape_markdown(issuer)}\n"
