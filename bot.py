@@ -310,7 +310,6 @@ begin.onclick=async()=>{
                 old = self.db.execute("SELECT release_id FROM releases WHERE repo = ?", (mod["repo"],)).fetchone()
                 if old and old[0] == current:
                     continue
-                # First check records the current version without announcing an old release.
                 if old:
                     channel = channel or self.get_channel(self.channel_id) or await self.fetch_channel(self.channel_id)
                     if not isinstance(channel, discord.abc.Messageable):
@@ -351,7 +350,6 @@ def main():
         perms = channel.permissions_for(me)
         if not (perms.send_messages and perms.manage_messages):
             return
-        # wipe regular messages; slash commands are interactions and stay
         if message.interaction is None and not message.content.startswith("/"):
             try:
                 await message.delete()
@@ -389,16 +387,15 @@ def main():
     @auto.command(name="refresh_token", description="Privately store a JWT for expiration monitoring")
     @app_commands.guild_only()
     async def refresh_token(interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
         if not linked(interaction.user.id):
-            await interaction.followup.send("Link a game device with /link first.", ephemeral=True)
+            await interaction.response.send_message("Link a game device with /link first.", ephemeral=True)
             return
         try:
             bot.auth.require_key()
         except RuntimeError as error:
-            await interaction.followup.send(str(error), ephemeral=True)
+            await interaction.response.send_message(str(error), ephemeral=True)
             return
-        await interaction.followup.send("Use the modal from the original command flow.", ephemeral=True)
+        await interaction.response.send_modal(TokenModal())
 
     @auto.command(name="tokens", description="List your stored token slots")
     @app_commands.guild_only()
