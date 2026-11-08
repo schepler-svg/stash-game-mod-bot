@@ -84,7 +84,7 @@ def release_embed(mod, release):
 class GameModBot(commands.Bot):
     def __init__(self, mods, guild_id, channel_id):
         intents = discord.Intents.default()
-        intents.message_content = True
+        intents.message_content = False
         super().__init__(command_prefix=commands.when_mentioned, intents=intents)
         self.mods, self.guild_id, self.channel_id = mods, guild_id, channel_id
         self.db = sqlite3.connect(ROOT / "bot.db")
@@ -265,9 +265,7 @@ begin.onclick=async()=>{
 
     @tasks.loop(minutes=5)
     async def check_jwt_expiration(self):
-        """Log every monitoring cycle; never refresh or authenticate a JWT."""
         from datetime import datetime, timezone
-
         checked_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
         checked = 0
         expired = 0
@@ -345,22 +343,12 @@ def main():
             LOG.error("SYNC FAIL %s", e)
 
     @bot.event
-    async def on_message(message: discord.Message):
-        if message.author.bot:
-            return
-        channel = message.channel
-        if not isinstance(channel, discord.TextChannel):
-            return
-        me = channel.guild.me
-        perms = channel.permissions_for(me)
-        if not (perms.send_messages and perms.manage_messages):
-            return
-        if message.interaction is None and not message.content.startswith("/"):
+    async def on_interaction(interaction: discord.Interaction):
+        if interaction.type == discord.InteractionType.application_command and not interaction.response.is_done():
             try:
-                await message.delete()
-            except discord.HTTPException:
+                await interaction.response.defer(ephemeral=True)
+            except Exception:
                 pass
-        await bot.process_commands(message)
 
     def linked(user_id: int) -> bool:
         return bot.db.execute(
@@ -393,19 +381,19 @@ def main():
     @app_commands.guild_only()
     async def refresh_token(interaction: discord.Interaction):
         if not linked(interaction.user.id):
-            await interaction.response.send_message("Link a game device with /link first.", ephemeral=True)
+            await interaction.followup.send("Link a game device with /link first.", ephemeral=True)
             return
         try:
             bot.auth.require_key()
         except RuntimeError as error:
-            await interaction.response.send_message(str(error), ephemeral=True)
+            await interaction.followup.send(str(error), ephemeral=True)
             return
+        await interaction.followup.send("Use the modal that appears.", ephemeral=True)
         await interaction.response.send_modal(TokenModal())
 
     @auto.command(name="tokens", description="List your stored token slots")
     @app_commands.guild_only()
     async def tokens(interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
         slots, selected = bot.auth.list_slots(interaction.user.id)
         message = ("Slots: " + ", ".join(f"#{n}{' (selected)' if n == selected else ''}" for n in slots)) if slots else "No token slots stored."
         await interaction.followup.send(message, ephemeral=True)
@@ -413,7 +401,6 @@ def main():
     @auto.command(name="jwt_status", description="Check JWT expiry without exposing the token")
     @app_commands.guild_only()
     async def jwt_status(interaction: discord.Interaction, slot: int):
-        await interaction.response.defer(ephemeral=True)
         try:
             result = bot.auth.jwt_status(interaction.user.id, slot)
         except (RuntimeError, ValueError) as error:
@@ -427,7 +414,6 @@ def main():
     @auto.command(name="jwt_info", description="Show safe JWT metadata and renewal status")
     @app_commands.guild_only()
     async def jwt_info(interaction: discord.Interaction, slot: int):
-        await interaction.response.defer(ephemeral=True)
         try:
             info = bot.auth.jwt_status(interaction.user.id, slot)
         except (RuntimeError, ValueError) as error:
@@ -449,14 +435,12 @@ def main():
     @auto.command(name="remove_token", description="Delete one stored token slot")
     @app_commands.guild_only()
     async def remove_token(interaction: discord.Interaction, slot: int):
-        await interaction.response.defer(ephemeral=True)
         removed = bot.auth.delete(interaction.user.id, slot)
         await interaction.followup.send("Token slot deleted." if removed else "No such token slot.", ephemeral=True)
 
     @use.command(name="auto_refresh_token", description="Select a stored token for your linked game device")
     @app_commands.guild_only()
     async def use_token(interaction: discord.Interaction, slot: int):
-        await interaction.response.defer(ephemeral=True)
         if not linked(interaction.user.id):
             await interaction.followup.send("Link a game device with /link first.", ephemeral=True)
             return
@@ -476,12 +460,11 @@ def main():
     @bot.tree.command(name="ping", description="Test if the bot answers")
     async def ping(interaction: discord.Interaction):
         LOG.info("PING RECEIVED")
-        await interaction.response.send_message("pong", ephemeral=True)
+        await interaction.followup.send("pong", ephemeral=True)
 
     @bot.tree.command(name="mods", description="List available game mods")
     @app_commands.guild_only()
     async def mods(interaction: discord.Interaction, game: str | None = None):
-        await interaction.response.defer(ephemeral=True)
         entries = [item for item in bot.mods if not game or game.casefold() in item["game"].casefold()]
         if not entries:
             await interaction.followup.send("No mods found. Add entries to mods.json.", ephemeral=True)
@@ -496,9 +479,8 @@ def main():
     async def mod(interaction: discord.Interaction, name: str):
         item = next((x for x in bot.mods if x["name"].casefold() == name.casefold()), None)
         if item is None:
-            await interaction.response.send_message("Unknown mod. Use /mods.", ephemeral=True)
+            await interaction.followup.send("Unknown mod. Use /mods.", ephemeral=True)
             return
-        await interaction.response.defer(thinking=True)
         try:
             release = await asyncio.to_thread(latest_release, item["repo"])
         except (OSError, RuntimeError) as error:
@@ -517,7 +499,6 @@ def main():
     @bot.tree.command(name="link", description="Link your Discord account with the game code")
     @app_commands.guild_only()
     async def link(interaction: discord.Interaction, code: str):
-        await interaction.response.defer(ephemeral=True)
         if bot.pairing.link(code.strip(), interaction.user.id):
             await interaction.followup.send("Account linked. Return to the game.", ephemeral=True)
         else:
@@ -526,7 +507,6 @@ def main():
     @bot.tree.command(name="unlink", description="Unlink your Discord account from the game")
     @app_commands.guild_only()
     async def unlink(interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
         count = bot.pairing.unlink_discord(interaction.user.id)
         bot.auth.clear(interaction.user.id)
         if count:
